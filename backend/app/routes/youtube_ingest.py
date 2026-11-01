@@ -14,11 +14,20 @@ import logging
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from sentence_transformers import SentenceTransformer
+
 from qdrant_client.http.models import PointStruct
 
 from app.config import COLLECTION_NAME
 from app.services.qdrant_service import qdrant_client
+from fastembed import TextEmbedding
+
+_embed_model = None
+
+def get_embed_model():
+    global _embed_model
+    if _embed_model is None:
+        _embed_model = TextEmbedding("BAAI/bge-small-en-v1.5")
+    return _embed_model
 
 EMBEDDING_MODEL_NAME = "BAAI/bge-small-en-v1.5"
 
@@ -122,8 +131,7 @@ async def ingest_youtube(body: YouTubeIngestRequest):
             c["course_id"] = body.course_id
 
     texts = [c["text"] for c in chunks]
-    embeddings = get_embed_model().encode(texts, normalize_embeddings=True).tolist()
-
+    embeddings = [list(e) for e in get_embed_model().embed(texts)]
     points = [
         PointStruct(id=str(uuid.uuid4()), vector=embeddings[i], payload=chunks[i])
         for i in range(len(chunks))
