@@ -20,32 +20,56 @@ log = logging.getLogger("interview")
 
 router = APIRouter(prefix="/interview", tags=["Interview"])
 
-# ── Gemini singleton ──────────────────────────────────────────────────────────
+# ── Gemini + Groq LLM with fallback ─────────────────────────────────────────
 
 _gemini_client = None
 _gemini_lock = threading.Lock()
+_groq_client = None
+_groq_lock = threading.Lock()
 
-def _get_client():
+def _get_gemini_client():
     global _gemini_client
     with _gemini_lock:
         if _gemini_client is None:
             from google import genai
-            api_key = os.getenv("INTERVIEW_GEMINI_API_KEY")
+            api_key = os.getenv("INTERVIEW_GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY")
             _gemini_client = genai.Client(api_key=api_key)
     return _gemini_client
+
+def _get_groq_client():
+    global _groq_client
+    with _groq_lock:
+        if _groq_client is None:
+            from groq import Groq
+            _groq_client = Groq(api_key=os.getenv("INTERVIEW_GROQ_KEY"))  # reads INTERVIEW_GROQ_KEY
+    return _groq_client
+
+def _llm_groq(system: str, prompt: str, json_mode: bool = False, max_tokens: int = 800) -> str:
+    client = _get_groq_client()
+    model = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
+    kwargs = dict(
+        model=model,
+        messages=[{"role": "system", "content": system}, {"role": "user", "content": prompt}],
+        temperature=0.4,
+        max_tokens=max_tokens,
+    )
+    if json_mode:
+        kwargs["response_format"] = {"type": "json_object"}
+    resp = client.chat.completions.create(**kwargs)
+    return resp.choices[0].message.content or ""
 
 def _llm(system: str, prompt: str, json_mode: bool = False, max_tokens: int = 800) -> str:
     from google.genai import types
     from google.genai.errors import ClientError
-    primary = os.getenv("INTERVIEW_GEMINI_MODEL", "gemini-3.6-flash")
-    fallbacks_str = os.getenv("INTERVIEW_GEMINI_FALLBACK_MODELS", "gemini-3.5-flash-lite")
-    models = [primary] + [m.strip() for m in fallbacks_str.split(",") if m.strip()]
-    client = _get_client()
+    primary = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
+    fallbacks_str = os.getenv("GEMINI_FALLBACK_MODELS", "gemini-3.5-flash-lite")
+    gemini_models = [primary] + [m.strip() for m in fallbacks_str.split(",") if m.strip()]
+    client = _get_gemini_client()
     kwargs = dict(system_instruction=system, temperature=0.4, max_output_tokens=max_tokens)
     if json_mode:
         kwargs["response_mime_type"] = "application/json"
     last_err = None
-    for model in models:
+    for model in gemini_models:
         try:
             resp = client.models.generate_content(
                 model=model, contents=prompt,
@@ -55,6 +79,14 @@ def _llm(system: str, prompt: str, json_mode: bool = False, max_tokens: int = 80
         except ClientError as e:
             log.warning("Gemini model %s failed: %s", model, e)
             last_err = e
+    # All Gemini models failed — try Groq if available
+    if os.getenv("INTERVIEW_GROQ_KEY"):
+        log.warning("All Gemini models failed, falling back to Groq: %s", last_err)
+        try:
+            return _llm_groq(system, prompt, json_mode=json_mode, max_tokens=max_tokens)
+        except Exception as e:
+            log.exception("Groq fallback also failed: %s", e)
+            raise RuntimeError(f"Gemini and Groq both failed: {e}") from e
     raise last_err
 
 def _parse_json(text: str):
