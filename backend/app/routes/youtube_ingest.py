@@ -25,7 +25,13 @@ EMBEDDING_MODEL_NAME = "BAAI/bge-small-en-v1.5"
 log = logging.getLogger("youtube_ingest")
 router = APIRouter(prefix="/api", tags=["YouTube Ingestion"])
 
-embed_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
+_embed_model = None
+
+def get_embed_model():
+    global _embed_model
+    if _embed_model is None:
+        _embed_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
+    return _embed_model
 
 
 class YouTubeIngestRequest(BaseModel):
@@ -116,7 +122,7 @@ async def ingest_youtube(body: YouTubeIngestRequest):
             c["course_id"] = body.course_id
 
     texts = [c["text"] for c in chunks]
-    embeddings = embed_model.encode(texts, normalize_embeddings=True).tolist()
+    embeddings = get_embed_model().encode(texts, normalize_embeddings=True).tolist()
 
     points = [
         PointStruct(id=str(uuid.uuid4()), vector=embeddings[i], payload=chunks[i])
