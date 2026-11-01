@@ -11,6 +11,7 @@ from app.services.qdrant_service import init_qdrant_collection
 
 from agent.app import router as agent_router
 from app.routes.interview import router as interview_router
+from app.routes.youtube_ingest import router as youtube_router
 
 app = FastAPI(title="AHGV Learning Assistant API", version="1.0.0")
 
@@ -29,10 +30,9 @@ def startup_event():
     except Exception as e:
         print(f"Warning: Qdrant not available ({e}). Interview will still work.")
 
-
-
 app.include_router(agent_router, prefix="/api", tags=["Agentic RAG"])
 app.include_router(interview_router, prefix="/api")
+app.include_router(youtube_router)
 
 @app.get("/health")
 def health_check():
